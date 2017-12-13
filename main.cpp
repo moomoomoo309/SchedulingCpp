@@ -23,16 +23,6 @@ struct event {
     int process;
 };
 
-union fmtArg {
-    int i;
-    double d;
-};
-
-struct logEntry {
-    std::string formatString;
-    std::vector<fmtArg> parameters;
-};
-
 struct Process {
     double start, deadline, period, execution;
 
@@ -42,19 +32,20 @@ struct Process {
 };
 
 std::map<Process, bool> scheduled = std::map<Process, bool>();
+std::map<char, std::string> thinBorders, thickBorders;
 
 struct Schedule {
     std::vector<event> events;
-    std::vector<logEntry> log;
+    std::vector<std::string> log;
     bool feasible = false;
 };
 
 struct TableCell {
-    std::string content;
+    std::string content = "";
     int colSpanIndex = -1;
 };
 
-typedef int (* schedulingAlgorithm)(std::vector<Process>, double);
+typedef int (*schedulingAlgorithm)(std::vector<Process>, double);
 
 double gcf(double a, double b) {
     a = std::abs(a);
@@ -72,8 +63,9 @@ template<typename array>
 double lcm(array arr, ulong len) {
     double last = NAN;
     for (int i = 0; i < len; i++) {
-        last = last == NAN ? arr[i]: LCM(last, arr[i]);
+        last = std::isnan(last) ? arr[i]: LCM(last, arr[i]);
     }
+    return last;
 }
 
 int earliestDeadlineFirst(std::vector<Process> processes, double time) {
@@ -105,49 +97,9 @@ int deadlineMonotonic(std::vector<Process> processes, double) {
     return index;
 }
 
-const std::map<char, std::string> thinBorders = {
-        {3,  "─"},
-        {5,  "┘"},
-        {6,  "└"},
-        {7,  "┴"},
-        {9,  "┐"},
-        {10, "┌"},
-        {11, "┬"},
-        {12, "│"},
-        {13, "┤"},
-        {14, "├"},
-        {15, "┼"}
-};
-
-const std::map<char, std::string> thickBorders = {
-        {3,  "━"},
-        {5,  "┛"},
-        {6,  "┗"},
-        {7,  "┻"},
-        {9,  "┓"},
-        {10, "┏"},
-        {11, "┳"},
-        {12, "┃"},
-        {13, "┫"},
-        {14, "┣"},
-        {15, "╋"}
-};
-
-class MalformedTable : std::exception {
-public:
-    explicit MalformedTable(std::string message) : msg(std::move(message)) {}
-
-    const char* what() const throw() override {
-        return msg.c_str();
-    }
-
-private:
-    std::string msg = "Malformed Table!";
-};
-
 std::string getBorders(bool left, bool right, bool up, bool down, bool thick = true) {
     std::map<char, std::string> borders = thick ? thickBorders: thinBorders;
-    return borders[(left ? 1: 0) + (right ? 2: 0) + (up ? 4: 0) + (down ? 8: 0)];
+    return borders[left + 2 * right + 4 * up + 8 * down];
 }
 
 enum justify {
@@ -157,18 +109,14 @@ enum justify {
     CENTER_RIGHT
 };
 
-std::string _getPad(const std::string &str, ulong len, const std::string &padChar = " ") {
+std::string _getPad(const std::string &str, ulong len, const char &padChar = ' ') {
     std::ostringstream out;
-    ulong strLen = str.length();
-    ulong numChars = len - strLen;
-    numChars = numChars >= 0 ? numChars: 0;
-    for (int i = 0; i < numChars / padChar.length(); i++)
-        out << padChar;
+    out.fill(padChar);
     out.width(len);
     return out.str();
 }
 
-std::string pad(const std::string &str, ulong len, const std::string &padChar = " ", justify align = CENTER_LEFT) {
+std::string pad(const std::string &str, ulong len, const char &padChar = ' ', justify align = CENTER_LEFT) {
     switch (align) {
         case RIGHT:
             return _getPad(str, len, padChar) + str;
@@ -182,43 +130,87 @@ std::string pad(const std::string &str, ulong len, const std::string &padChar = 
     }
 }
 
-std::string formatTable(TableCell* tbl, const ulong &tblLen, ulong* columnLengths, const ulong &cols) {
+std::string formatTable(TableCell *tbl, const ulong &tblLen, ulong *columnLengths, const ulong &cols) {
     ulong rows = tblLen / cols;
     std::vector<ulong> newlineIndices = {0};
     std::vector<ulong> separatorIndices;
     std::vector<std::ostringstream> separatorRows;
     std::vector<std::ostringstream> contentRows;
-    gsl::span<ulong> window;
-    for (ulong i = rows * cols - 1; i >= 0; i--) {
-        if (tbl[i].colSpanIndex % cols > i % cols)
-            throw MalformedTable("Column spans cannot cross rows!");
+    gsl::span<ulong> upWindow, downWindow;
+    for (ulong i = rows * cols - 1;; i--) {
         if (tbl[i].colSpanIndex == -1)
             separatorIndices.push_back(i);
+        else if (tbl[i].colSpanIndex % cols > i % cols)
+            throw std::invalid_argument("Column spans cannot cross rows!");
+        if (i == 0) //Since it's unsigned, this is easier.
+            break;
     }
-
+    for (ulong i = 0; i < rows; i++)
+        contentRows.emplace_back(std::ostringstream());
     std::string sep = getBorders(false, false, true, true);
     ulong contIndex = 0, sepIndex = 0;
-    ulong lastSep = separatorIndices.size() - 1;
+    const ulong lastSep = separatorIndices.size() - 1;
     for (ulong i = 0; i < rows * cols; i++) {
         if (i % cols == cols - 1) {
             contentRows[contIndex] << sep;
-            contentRows[contIndex++] << std::endl;
-            separatorIndices.push_back(i);
+            contentRows[contIndex] << std::endl;
+            contentRows[contIndex++] << pad(tbl[i].content, columnLengths[i % cols]);
             newlineIndices.push_back(separatorIndices.size());
+            separatorIndices.push_back(i);
         }
-        if (separatorIndices[sepIndex - i]) {
+        if (separatorIndices[lastSep - i]) {
             contentRows[contIndex] << sep;
             separatorIndices.push_back(i);
+            contentRows[contIndex] << pad(tbl[i].content, columnLengths[i % cols]);
         }
-        contentRows[contIndex] << pad(tbl[i].content, columnLengths[i % cols]);
+    }
+    //First row
+    {
+        separatorRows.emplace_back(std::ostringstream());
+        ulong i = 0;
+        ulong downIndex = 0;
+        downWindow = gsl::make_span(&separatorIndices[newlineIndices[i]], &separatorIndices[newlineIndices[i + 1]]);\
+        for (ulong i2 = 0; i2 < cols; i2++) {
+            bool down = downWindow[downIndex] == i2;
+            downIndex += down;
+            separatorRows[sepIndex] << getBorders(i2 > 0, i2 < cols - 1, false, down);
+        }
+        sepIndex++;
     }
 
-    for (ulong i = 0; i < separatorIndices.size(); i += 2) {
-        window = gsl::make_span(&separatorIndices[newlineIndices[i]], &separatorIndices[newlineIndices[i + 1]]);
-
+    //Middle rows
+    for (ulong i = 2; i <= 3; i++) {
+        separatorRows.emplace_back(std::ostringstream());
+        ulong upIndex = 0, downIndex = 0;
+        upWindow = gsl::make_span(&separatorIndices[newlineIndices[i - 2]], &separatorIndices[newlineIndices[i - 1]]);
+        downWindow = gsl::make_span(&separatorIndices[newlineIndices[i]], &separatorIndices[newlineIndices[i + 1]]);
+        for (ulong i2 = 0; i2 < cols; i2++) {
+            bool up = upWindow[upIndex] == i2, down = downWindow[downIndex] == i2;
+            upIndex += up;
+            downIndex += down;
+            separatorRows[sepIndex] << getBorders(i2 > 0, i2 < cols - 1, up, down);
+        }
+        sepIndex++;
+    }
+    //Bottom row
+    {
+        separatorRows.emplace_back(std::ostringstream());
+        ulong upIndex = 0;
+        for (ulong i2 = 0; i2 < cols; i2++) {
+            bool up = upWindow[upIndex] == i2;
+            upIndex += up;
+            separatorRows[sepIndex] << getBorders(i2 > 0, i2 < cols - 1, up, false);
+        }
     }
 
-    return contentRows[0].str();
+    std::ostringstream output;
+    for (ulong i = 0; i < std::max(separatorRows.size(), contentRows.size()); i++) {
+        if (i < separatorRows.size())
+            output << separatorRows[i].str();
+        if (i < contentRows.size())
+            output << contentRows[i].str();
+    }
+    return output.str();
 }
 
 std::string formatSchedule(Schedule schedule, const std::vector<Process> &processes, double stopTime) {
@@ -233,12 +225,16 @@ std::string formatSchedule(Schedule schedule, const std::vector<Process> &proces
             }
         }
     }
-    ulong columnLengths[processes.size() + 2];
+    const ulong cols = processes.size() + 2;
+    ulong columnLengths[cols];
+    for (int i = 0; i < cols; i++)
+        columnLengths[i] = 0;
     auto tblLen = (ulong) ((processes.size() + 2) * ceil(stopTime / timeStep));
     TableCell tbl[tblLen];
+    tbl[0].content = "Processes";
     for (auto event: schedule.events) {
-        auto row = (int) round(event.time / timeStep);
-        ulong index = event.process + row * (processes.size() + 2);
+        auto row = (ulong) std::round(event.time / timeStep) + 2;
+        ulong index = event.process + row * (processes.size() + 1);
         switch (event.type) {
             case deadline:
                 tbl[index].content = ")" + tbl[index].content;
@@ -254,17 +250,26 @@ std::string formatSchedule(Schedule schedule, const std::vector<Process> &proces
                 break;
         }
     }
+
     for (int i = 0; i < tblLen; i++) {
         if (i < processes.size() + 2 and tbl[i].content.length() == 0)
             tbl[i].colSpanIndex = i > 0 and tbl[i - 1].colSpanIndex != -1 ? tbl[i - 1].colSpanIndex: i - 1;
-        columnLengths[i] = columnLengths[i] > tbl[i].content.length() ? columnLengths[i]: tbl[i].content.length();
+        columnLengths[i % cols] =
+                columnLengths[i % cols] > tbl[i].content.length() ? columnLengths[i % cols]: tbl[i].content.length();
     }
-
     return formatTable(tbl, tblLen, columnLengths, processes.size() + 2);
 }
 
+template<typename ... Args>
+std::string string_format(const std::string &format, Args... args) {
+    int size = (snprintf(nullptr, 0, format.c_str(), args ...) + 1);
+    std::unique_ptr<char[]> buf(new char[size]);
+    snprintf(buf.get(), (ulong) size, format.c_str(), args ...);
+    return std::string(buf.get(), buf.get() + size - 1); //Take out the null terminator.
+}
+
 Schedule
-schedule(const std::vector<Process> &processes, schedulingAlgorithm* algorithm, double startTime, double &stopTime) {
+schedule(const std::vector<Process> &processes, schedulingAlgorithm *algorithm, double startTime, double &stopTime) {
     double time = startTime;
     double lastScheduleTime[processes.size()];
     struct Schedule schedule = {};
@@ -278,11 +283,13 @@ schedule(const std::vector<Process> &processes, schedulingAlgorithm* algorithm, 
             if (lastScheduleTime[i] != -1 and lastScheduleTime[i] + process.deadline == time) {
                 if (scheduled[process])
                     schedule.feasible = false;
-                schedule.log.push_back({"[%.1f] Process %d queued.", {(fmtArg) {.d=time}, (fmtArg) {.i=i}}});
+                schedule.log.push_back(string_format(scheduled[process]
+                                                     ? "[%g] Process %i's deadline was missed.\n"
+                                                     : "[%g] Process %i's deadline was met.\n", time, i + 1));
                 schedule.events.push_back((event) {deadline, time, i});
             }
             if (time - process.start >= 0 and fmod((time - process.start), process.period) <= 1e-8) {
-                schedule.log.push_back({"[%s] Process %d queued.", {(fmtArg) {.d=time}, (fmtArg) {.i=i}}});
+                schedule.log.push_back(string_format("[%g] Process %i queued.\n", time, i));
                 scheduled[process] = true;
                 schedule.events.push_back((event) {start, time, i});
                 lastScheduleTime[i] = time;
@@ -354,7 +361,33 @@ std::map<schedulingAlgorithm, std::string> names;
 std::vector<Process> processes;
 schedulingAlgorithm algorithm = deadlineMonotonic;
 
-int main(int argc, char** argv) {
+int main(int argc, char **argv) {
+    thinBorders = {
+            {3,  "─"},
+            {5,  "┘"},
+            {6,  "└"},
+            {7,  "┴"},
+            {9,  "┐"},
+            {10, "┌"},
+            {11, "┬"},
+            {12, "│"},
+            {13, "┤"},
+            {14, "├"},
+            {15, "┼"}
+    };
+    thickBorders = {
+            {3,  "━"},
+            {5,  "┛"},
+            {6,  "┗"},
+            {7,  "┻"},
+            {9,  "┓"},
+            {10, "┏"},
+            {11, "┳"},
+            {12, "┃"},
+            {13, "┫"},
+            {14, "┣"},
+            {15, "╋"}
+    };
     names = {
             {earliestDeadlineFirst, "Earliest Deadline First"},
             {deadlineMonotonic,     "Deadline Monotonic"}
@@ -378,7 +411,7 @@ int main(int argc, char** argv) {
         std::cout << formatSchedule(_schedule, processes, stopTime) << std::endl;
         std::cout << std::endl << "Log:" << std::endl;
         for (const auto &entry: _schedule.log) {
-            printf(entry.formatString.c_str(), entry.parameters[0], entry.parameters[1]);
+            std::cout << entry;
         }
     }
     return 0;
